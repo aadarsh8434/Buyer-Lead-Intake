@@ -66,14 +66,8 @@ export async function GET(request: NextRequest) {
 
     // ✅ Build CSV rows
     const csvRows = buyers.map((buyer) => {
-      // Ensure tags is always a string (never null or undefined)
-      let tagsString = "";
-
-      if (typeof buyer.tags === "string") {
-        tagsString = buyer.tags;
-      } else if (Array.isArray(buyer.tags)) {
-        tagsString = buyer.tags.join(",");
-      }
+      // ✅ Always treat tags as string (safe for SQLite)
+      const tagsString = buyer.tags ?? ""; // fallback to empty string if null
 
       return [
         buyer.fullName ?? "",
@@ -88,7 +82,7 @@ export async function GET(request: NextRequest) {
         buyer.timeline ?? "",
         buyer.source ?? "",
         buyer.notes ?? "",
-        tagsString,
+        tagsString, // ✅ already a string
         buyer.status ?? "",
         buyer.createdAt.toISOString(),
         buyer.updatedAt.toISOString(),
