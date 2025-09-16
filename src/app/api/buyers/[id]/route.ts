@@ -15,55 +15,39 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    // Extract ID
     const { id } = await params;
-
-    // Get session user
     const user = await getSessionUser();
 
     if (!user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Find buyer by ID
     const buyer = await prisma.buyer.findUnique({
       where: { id },
       include: {
-        owner: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
+        owner: { select: { id: true, name: true, email: true } },
       },
     });
 
     if (!buyer) {
-      return NextResponse.json(
-        { error: "Buyer not found" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Buyer not found" }, { status: 404 });
     }
 
-    // ✅ Convert tags string → array for frontend
+    // ✅ Always convert tags safely (string → array)
     const buyerResponse = {
       ...buyer,
-      tags: buyer.tags ? buyer.tags.split(",") : [],
+      tags:
+        typeof buyer.tags === "string"
+          ? buyer.tags.split(",")
+          : Array.isArray(buyer.tags)
+          ? buyer.tags
+          : [],
     };
 
     return NextResponse.json(buyerResponse);
-
   } catch (error) {
     console.error("GET /api/buyers/[id] error:", error);
-
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
@@ -79,19 +63,14 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
-
     const user = await getSessionUser();
 
     if (!user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // ✅ Apply rate limiting (20 updates per minute per user)
+    // ✅ Rate limit: 20 updates per minute per user
     const rateLimitResult = rateLimit(`update_${user.id}`, 20, 60_000);
-
     if (!rateLimitResult.success) {
       return NextResponse.json(
         { error: "Rate limit exceeded. Try again later." },
@@ -99,21 +78,12 @@ export async function PUT(
       );
     }
 
-    // Parse and validate input
     const body = await request.json();
-
     const validatedData = updateBuyerSchema.parse(body);
 
-    // Get current record for concurrency and ownership checks
-    const currentBuyer = await prisma.buyer.findUnique({
-      where: { id },
-    });
-
+    const currentBuyer = await prisma.buyer.findUnique({ where: { id } });
     if (!currentBuyer) {
-      return NextResponse.json(
-        { error: "Buyer not found" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Buyer not found" }, { status: 404 });
     }
 
     // Ownership check
@@ -124,10 +94,9 @@ export async function PUT(
       );
     }
 
-    // Concurrency control: reject stale updates
+    // Concurrency control
     if (validatedData.updatedAt) {
       const providedUpdatedAt = new Date(validatedData.updatedAt);
-
       if (currentBuyer.updatedAt.getTime() !== providedUpdatedAt.getTime()) {
         return NextResponse.json(
           {
@@ -140,59 +109,40 @@ export async function PUT(
     }
 
     // Clean empty email field
-    if (validatedData.email === "") {
-      validatedData.email = undefined;
-    }
+    if (validatedData.email === "") validatedData.email = undefined;
 
-    // Build updateData safely
+    // ✅ Build updateData safely (tags → string if array)
     const { updatedAt, ...rest } = validatedData;
-
     const updateData: Record<string, any> = {
       ...rest,
       tags: Array.isArray(rest.tags) ? rest.tags.join(",") : rest.tags,
     };
 
-    // Calculate diff for history
+    // ✅ Diff calculation for history logging
     const diff: Record<string, { from: any; to: any }> = {};
-
-    Object.keys(updateData).forEach((key) => {
-      const previousValue = currentBuyer[key as keyof typeof currentBuyer];
+    for (const key of Object.keys(updateData)) {
+      const oldValue = currentBuyer[key as keyof typeof currentBuyer];
       const newValue = updateData[key];
-
-      if (previousValue !== newValue) {
-        diff[key] = {
-          from: previousValue,
-          to: newValue,
-        };
+      if (oldValue !== newValue) {
+        diff[key] = { from: oldValue, to: newValue };
       }
-    });
+    }
 
-    // Run Prisma transaction
     const updatedBuyer = await prisma.$transaction(async (tx) => {
       const buyer = await tx.buyer.update({
         where: { id },
         data: updateData,
         include: {
-          owner: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
+          owner: { select: { id: true, name: true, email: true } },
         },
       });
 
-      // Record history only if changes were made
       if (Object.keys(diff).length > 0) {
         await tx.buyerHistory.create({
           data: {
             buyerId: id,
             changedBy: user.id,
-            diff: {
-              action: "updated",
-              changes: diff,
-            },
+            diff: { action: "updated", changes: diff },
           },
         });
       }
@@ -200,12 +150,16 @@ export async function PUT(
       return buyer;
     });
 
-    // ✅ Convert tags back to array before sending to frontend
+    // ✅ Return with tags converted to array again
     return NextResponse.json({
       ...updatedBuyer,
-      tags: updatedBuyer.tags ? updatedBuyer.tags.split(",") : [],
+      tags:
+        typeof updatedBuyer.tags === "string"
+          ? updatedBuyer.tags.split(",")
+          : Array.isArray(updatedBuyer.tags)
+          ? updatedBuyer.tags
+          : [],
     });
-
   } catch (error) {
     console.error("PUT /api/buyers/[id] error:", error);
 
@@ -216,10 +170,7 @@ export async function PUT(
       );
     }
 
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
@@ -235,28 +186,17 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-
     const user = await getSessionUser();
 
     if (!user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const currentBuyer = await prisma.buyer.findUnique({
-      where: { id },
-    });
-
+    const currentBuyer = await prisma.buyer.findUnique({ where: { id } });
     if (!currentBuyer) {
-      return NextResponse.json(
-        { error: "Buyer not found" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Buyer not found" }, { status: 404 });
     }
 
-    // Ownership check
     if (currentBuyer.ownerId !== user.id) {
       return NextResponse.json(
         { error: "Forbidden: You can only delete your own leads" },
@@ -264,27 +204,14 @@ export async function DELETE(
       );
     }
 
-    // Delete inside a transaction
     await prisma.$transaction(async (tx) => {
-      await tx.buyerHistory.deleteMany({
-        where: { buyerId: id },
-      });
-
-      await tx.buyer.delete({
-        where: { id },
-      });
+      await tx.buyerHistory.deleteMany({ where: { buyerId: id } });
+      await tx.buyer.delete({ where: { id } });
     });
 
-    return NextResponse.json({
-      message: "Buyer deleted successfully",
-    });
-
+    return NextResponse.json({ message: "Buyer deleted successfully" });
   } catch (error) {
     console.error("DELETE /api/buyers/[id] error:", error);
-
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

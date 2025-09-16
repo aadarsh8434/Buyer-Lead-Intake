@@ -13,19 +13,19 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const params = Object.fromEntries(searchParams);
 
-    // Remove pagination for export (we want all matching records)
+    // ✅ Remove pagination params for export
     delete params.page;
     delete params.limit;
 
     const validatedParams = buyerQuerySchema
       .omit({ page: true, limit: true })
       .parse(params);
+
     const { search, city, propertyType, status, timeline, sortBy, sortOrder } =
       validatedParams;
 
-    // Build where clause (same as GET /api/buyers)
+    // ✅ Build Prisma where clause dynamically
     const where: any = {};
-
     if (search) {
       where.OR = [
         { fullName: { contains: search, mode: "insensitive" } },
@@ -33,21 +33,18 @@ export async function GET(request: NextRequest) {
         { email: { contains: search, mode: "insensitive" } },
       ];
     }
-
     if (city) where.city = city;
     if (propertyType) where.propertyType = propertyType;
     if (status) where.status = status;
     if (timeline) where.timeline = timeline;
 
-    // Get all matching buyers
+    // ✅ Fetch all matching buyers (no pagination)
     const buyers = await prisma.buyer.findMany({
       where,
-      orderBy: {
-        [sortBy]: sortOrder,
-      },
+      orderBy: { [sortBy]: sortOrder },
     });
 
-    // Convert to CSV format
+    // ✅ Define CSV headers
     const csvHeaders = [
       "fullName",
       "email",
@@ -67,36 +64,38 @@ export async function GET(request: NextRequest) {
       "updatedAt",
     ];
 
+    // ✅ Build CSV rows
     const csvRows = buyers.map((buyer) => {
-      // ✅ Ensure tags is always an array (split if string, or empty array if null)
-      const tagsArray =
-        typeof buyer.tags === "string"
-          ? buyer.tags.split(",")
-          : Array.isArray(buyer.tags)
-          ? buyer.tags
-          : [];
+      // Ensure tags is always a string (never null or undefined)
+      let tagsString = "";
+
+      if (typeof buyer.tags === "string") {
+        tagsString = buyer.tags;
+      } else if (Array.isArray(buyer.tags)) {
+        tagsString = buyer.tags.join(",");
+      }
 
       return [
-        buyer.fullName,
-        buyer.email || "",
-        buyer.phone,
-        buyer.city,
-        buyer.propertyType,
-        buyer.bhk || "",
-        buyer.purpose,
-        buyer.budgetMin || "",
-        buyer.budgetMax || "",
-        buyer.timeline,
-        buyer.source,
-        buyer.notes || "",
-        tagsArray.join(","), // ✅ Safe join even if tags is empty
-        buyer.status,
+        buyer.fullName ?? "",
+        buyer.email ?? "",
+        buyer.phone ?? "",
+        buyer.city ?? "",
+        buyer.propertyType ?? "",
+        buyer.bhk ?? "",
+        buyer.purpose ?? "",
+        buyer.budgetMin ?? "",
+        buyer.budgetMax ?? "",
+        buyer.timeline ?? "",
+        buyer.source ?? "",
+        buyer.notes ?? "",
+        tagsString,
+        buyer.status ?? "",
         buyer.createdAt.toISOString(),
         buyer.updatedAt.toISOString(),
       ];
     });
 
-    // Create CSV content
+    // ✅ Create CSV content safely
     const csvContent = [
       csvHeaders.join(","),
       ...csvRows.map((row) =>
@@ -104,14 +103,14 @@ export async function GET(request: NextRequest) {
           .map((field) =>
             typeof field === "string" &&
             (field.includes(",") || field.includes('"') || field.includes("\n"))
-              ? `"${field.replace(/"/g, '""')}"`
+              ? `"${field.replace(/"/g, '""')}"` // escape commas/quotes/newlines
               : field
           )
           .join(",")
       ),
     ].join("\n");
 
-    // Return CSV file
+    // ✅ Send CSV as file download
     return new NextResponse(csvContent, {
       headers: {
         "Content-Type": "text/csv",
@@ -122,9 +121,6 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("GET /api/buyers/export error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
