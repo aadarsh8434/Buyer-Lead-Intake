@@ -4,19 +4,33 @@ import { getSessionUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 import { prisma } from "@/lib/prisma";
 
+/**
+ * ===========================
+ * GET /api/buyers/[id]
+ * ===========================
+ * Fetch a buyer by ID.
+ */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    // Extract ID
     const { id } = await params;
+
+    // Get session user
     const user = await getSessionUser();
+
     if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
     }
 
+    // Find buyer by ID
     const buyer = await prisma.buyer.findUnique({
-      where: { id: id },
+      where: { id },
       include: {
         owner: {
           select: {
@@ -29,18 +43,23 @@ export async function GET(
     });
 
     if (!buyer) {
-      return NextResponse.json({ error: "Buyer not found" }, { status: 404 });
+      return NextResponse.json(
+        { error: "Buyer not found" },
+        { status: 404 }
+      );
     }
 
-    // ✅ Create a safe copy with tags as array
+    // ✅ Convert tags string → array for frontend
     const buyerResponse = {
       ...buyer,
-      tags: buyer.tags ? buyer.tags.split(",") : [], // Now always string[]
+      tags: buyer.tags ? buyer.tags.split(",") : [],
     };
 
     return NextResponse.json(buyerResponse);
+
   } catch (error) {
     console.error("GET /api/buyers/[id] error:", error);
+
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }
@@ -48,20 +67,31 @@ export async function GET(
   }
 }
 
-
+/**
+ * ===========================
+ * PUT /api/buyers/[id]
+ * ===========================
+ * Update a buyer record.
+ */
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
+
     const user = await getSessionUser();
+
     if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
     }
 
-    // ✅ Rate limiting
-    const rateLimitResult = rateLimit(`update_${user.id}`, 20, 60000);
+    // ✅ Apply rate limiting (20 updates per minute per user)
+    const rateLimitResult = rateLimit(`update_${user.id}`, 20, 60_000);
+
     if (!rateLimitResult.success) {
       return NextResponse.json(
         { error: "Rate limit exceeded. Try again later." },
@@ -69,18 +99,24 @@ export async function PUT(
       );
     }
 
+    // Parse and validate input
     const body = await request.json();
+
     const validatedData = updateBuyerSchema.parse(body);
 
-    // ✅ Get current buyer for ownership check
+    // Get current record for concurrency and ownership checks
     const currentBuyer = await prisma.buyer.findUnique({
-      where: { id: id },
+      where: { id },
     });
 
     if (!currentBuyer) {
-      return NextResponse.json({ error: "Buyer not found" }, { status: 404 });
+      return NextResponse.json(
+        { error: "Buyer not found" },
+        { status: 404 }
+      );
     }
 
+    // Ownership check
     if (currentBuyer.ownerId !== user.id) {
       return NextResponse.json(
         { error: "Forbidden: You can only edit your own leads" },
@@ -88,9 +124,10 @@ export async function PUT(
       );
     }
 
-    // ✅ Concurrency control
+    // Concurrency control: reject stale updates
     if (validatedData.updatedAt) {
       const providedUpdatedAt = new Date(validatedData.updatedAt);
+
       if (currentBuyer.updatedAt.getTime() !== providedUpdatedAt.getTime()) {
         return NextResponse.json(
           {
@@ -102,32 +139,38 @@ export async function PUT(
       }
     }
 
+    // Clean empty email field
     if (validatedData.email === "") {
       validatedData.email = undefined;
     }
 
-    const { updatedAt, ...updateData } = validatedData;
+    // Build updateData safely
+    const { updatedAt, ...rest } = validatedData;
 
-    // ✅ Convert tags array → string for SQLite
-    if (Array.isArray(updateData.tags)) {
-      updateData.tags = updateData.tags.join(",");
-    }
+    const updateData: Record<string, any> = {
+      ...rest,
+      tags: Array.isArray(rest.tags) ? rest.tags.join(",") : rest.tags,
+    };
 
-    // ✅ Calculate diff
-    const diff: any = {};
+    // Calculate diff for history
+    const diff: Record<string, { from: any; to: any }> = {};
+
     Object.keys(updateData).forEach((key) => {
-      const typedKey = key as keyof typeof updateData;
-      if (currentBuyer[typedKey] !== updateData[typedKey]) {
+      const previousValue = currentBuyer[key as keyof typeof currentBuyer];
+      const newValue = updateData[key];
+
+      if (previousValue !== newValue) {
         diff[key] = {
-          from: currentBuyer[typedKey],
-          to: updateData[typedKey],
+          from: previousValue,
+          to: newValue,
         };
       }
     });
 
+    // Run Prisma transaction
     const updatedBuyer = await prisma.$transaction(async (tx) => {
       const buyer = await tx.buyer.update({
-        where: { id: id },
+        where: { id },
         data: updateData,
         include: {
           owner: {
@@ -140,6 +183,7 @@ export async function PUT(
         },
       });
 
+      // Record history only if changes were made
       if (Object.keys(diff).length > 0) {
         await tx.buyerHistory.create({
           data: {
@@ -156,7 +200,12 @@ export async function PUT(
       return buyer;
     });
 
-    return NextResponse.json(updatedBuyer);
+    // ✅ Convert tags back to array before sending to frontend
+    return NextResponse.json({
+      ...updatedBuyer,
+      tags: updatedBuyer.tags ? updatedBuyer.tags.split(",") : [],
+    });
+
   } catch (error) {
     console.error("PUT /api/buyers/[id] error:", error);
 
@@ -174,25 +223,40 @@ export async function PUT(
   }
 }
 
+/**
+ * ===========================
+ * DELETE /api/buyers/[id]
+ * ===========================
+ * Delete a buyer record.
+ */
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
+
     const user = await getSessionUser();
+
     if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
     }
 
     const currentBuyer = await prisma.buyer.findUnique({
-      where: { id: id },
+      where: { id },
     });
 
     if (!currentBuyer) {
-      return NextResponse.json({ error: "Buyer not found" }, { status: 404 });
+      return NextResponse.json(
+        { error: "Buyer not found" },
+        { status: 404 }
+      );
     }
 
+    // Ownership check
     if (currentBuyer.ownerId !== user.id) {
       return NextResponse.json(
         { error: "Forbidden: You can only delete your own leads" },
@@ -200,19 +264,24 @@ export async function DELETE(
       );
     }
 
+    // Delete inside a transaction
     await prisma.$transaction(async (tx) => {
       await tx.buyerHistory.deleteMany({
         where: { buyerId: id },
       });
 
       await tx.buyer.delete({
-        where: { id: id },
+        where: { id },
       });
     });
 
-    return NextResponse.json({ message: "Buyer deleted successfully" });
+    return NextResponse.json({
+      message: "Buyer deleted successfully",
+    });
+
   } catch (error) {
     console.error("DELETE /api/buyers/[id] error:", error);
+
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }
