@@ -32,6 +32,11 @@ export async function GET(
       return NextResponse.json({ error: "Buyer not found" }, { status: 404 });
     }
 
+    // ✅ Convert tags back to array for frontend
+    if (buyer.tags) {
+      buyer.tags = buyer.tags.split(","); // SQLite stores as string
+    }
+
     return NextResponse.json(buyer);
   } catch (error) {
     console.error("GET /api/buyers/[id] error:", error);
@@ -53,8 +58,8 @@ export async function PUT(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Rate limiting
-    const rateLimitResult = rateLimit(`update_${user.id}`, 20, 60000); // 20 per minute
+    // ✅ Rate limiting
+    const rateLimitResult = rateLimit(`update_${user.id}`, 20, 60000);
     if (!rateLimitResult.success) {
       return NextResponse.json(
         { error: "Rate limit exceeded. Try again later." },
@@ -65,7 +70,7 @@ export async function PUT(
     const body = await request.json();
     const validatedData = updateBuyerSchema.parse(body);
 
-    // Get current buyer for ownership check and concurrency control
+    // ✅ Get current buyer for ownership check
     const currentBuyer = await prisma.buyer.findUnique({
       where: { id: id },
     });
@@ -74,7 +79,6 @@ export async function PUT(
       return NextResponse.json({ error: "Buyer not found" }, { status: 404 });
     }
 
-    // Check ownership
     if (currentBuyer.ownerId !== user.id) {
       return NextResponse.json(
         { error: "Forbidden: You can only edit your own leads" },
@@ -82,7 +86,7 @@ export async function PUT(
       );
     }
 
-    // Concurrency control
+    // ✅ Concurrency control
     if (validatedData.updatedAt) {
       const providedUpdatedAt = new Date(validatedData.updatedAt);
       if (currentBuyer.updatedAt.getTime() !== providedUpdatedAt.getTime()) {
@@ -96,15 +100,18 @@ export async function PUT(
       }
     }
 
-    // Clean email field
     if (validatedData.email === "") {
       validatedData.email = undefined;
     }
 
-    // Remove updatedAt from data to update
     const { updatedAt, ...updateData } = validatedData;
 
-    // Calculate diff for history
+    // ✅ Convert tags array → string for SQLite
+    if (Array.isArray(updateData.tags)) {
+      updateData.tags = updateData.tags.join(",");
+    }
+
+    // ✅ Calculate diff
     const diff: any = {};
     Object.keys(updateData).forEach((key) => {
       const typedKey = key as keyof typeof updateData;
@@ -117,7 +124,6 @@ export async function PUT(
     });
 
     const updatedBuyer = await prisma.$transaction(async (tx) => {
-      // Update buyer
       const buyer = await tx.buyer.update({
         where: { id: id },
         data: updateData,
@@ -132,7 +138,6 @@ export async function PUT(
         },
       });
 
-      // Create history entry only if there are changes
       if (Object.keys(diff).length > 0) {
         await tx.buyerHistory.create({
           data: {
@@ -178,7 +183,6 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Get current buyer for ownership check
     const currentBuyer = await prisma.buyer.findUnique({
       where: { id: id },
     });
@@ -187,7 +191,6 @@ export async function DELETE(
       return NextResponse.json({ error: "Buyer not found" }, { status: 404 });
     }
 
-    // Check ownership
     if (currentBuyer.ownerId !== user.id) {
       return NextResponse.json(
         { error: "Forbidden: You can only delete your own leads" },
@@ -196,12 +199,10 @@ export async function DELETE(
     }
 
     await prisma.$transaction(async (tx) => {
-      // Delete history entries first
       await tx.buyerHistory.deleteMany({
         where: { buyerId: id },
       });
 
-      // Delete buyer
       await tx.buyer.delete({
         where: { id: id },
       });
