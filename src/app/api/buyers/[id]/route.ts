@@ -32,12 +32,13 @@ export async function GET(
       return NextResponse.json({ error: "Buyer not found" }, { status: 404 });
     }
 
-    // ✅ Convert tags back to array for frontend
-    if (buyer.tags) {
-      buyer.tags = buyer.tags.split(","); // SQLite stores as string
-    }
+    // ✅ Create a safe copy with tags as array
+    const buyerResponse = {
+      ...buyer,
+      tags: buyer.tags ? buyer.tags.split(",") : [], // Now always string[]
+    };
 
-    return NextResponse.json(buyer);
+    return NextResponse.json(buyerResponse);
   } catch (error) {
     console.error("GET /api/buyers/[id] error:", error);
     return NextResponse.json(
@@ -46,6 +47,7 @@ export async function GET(
     );
   }
 }
+
 
 export async function PUT(
   request: NextRequest,
