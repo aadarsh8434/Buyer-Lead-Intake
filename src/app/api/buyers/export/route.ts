@@ -67,24 +67,34 @@ export async function GET(request: NextRequest) {
       "updatedAt",
     ];
 
-    const csvRows = buyers.map((buyer) => [
-      buyer.fullName,
-      buyer.email || "",
-      buyer.phone,
-      buyer.city,
-      buyer.propertyType,
-      buyer.bhk || "",
-      buyer.purpose,
-      buyer.budgetMin || "",
-      buyer.budgetMax || "",
-      buyer.timeline,
-      buyer.source,
-      buyer.notes || "",
-      buyer.tags.join(","),
-      buyer.status,
-      buyer.createdAt.toISOString(),
-      buyer.updatedAt.toISOString(),
-    ]);
+    const csvRows = buyers.map((buyer) => {
+      // ✅ Ensure tags is always an array (split if string, or empty array if null)
+      const tagsArray =
+        typeof buyer.tags === "string"
+          ? buyer.tags.split(",")
+          : Array.isArray(buyer.tags)
+          ? buyer.tags
+          : [];
+
+      return [
+        buyer.fullName,
+        buyer.email || "",
+        buyer.phone,
+        buyer.city,
+        buyer.propertyType,
+        buyer.bhk || "",
+        buyer.purpose,
+        buyer.budgetMin || "",
+        buyer.budgetMax || "",
+        buyer.timeline,
+        buyer.source,
+        buyer.notes || "",
+        tagsArray.join(","), // ✅ Safe join even if tags is empty
+        buyer.status,
+        buyer.createdAt.toISOString(),
+        buyer.updatedAt.toISOString(),
+      ];
+    });
 
     // Create CSV content
     const csvContent = [
@@ -94,7 +104,7 @@ export async function GET(request: NextRequest) {
           .map((field) =>
             typeof field === "string" &&
             (field.includes(",") || field.includes('"') || field.includes("\n"))
-              ? `"${field.replace(/"/g, '""')}"` // Escape quotes and wrap in quotes
+              ? `"${field.replace(/"/g, '""')}"`
               : field
           )
           .join(",")
